@@ -1,0 +1,17 @@
+# Weights & Biases Configuration
+# Add your wandb settings here
+
+# Project settings
+project: "decoder-transformer"
+entity: null  # Your wandb username/team
+name: null    # Auto-generated if null
+
+# Logging settings
+log_interval: 100
+log_model: true
+log_gradients: true
+log_parameters: true
+
+# Experiment tracking
+tags: ["transformer", "decoder-only", "tiny-stories"]
+notes: "Decoder-only transformer trained on TinyStories dataset"

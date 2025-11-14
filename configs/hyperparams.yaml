@@ -1,0 +1,40 @@
+# Training Configuration for Decoder-Only Transformer
+
+# Model Architecture
+d_model: 512
+num_layers: 6
+num_heads: 8
+d_ff: 2048
+max_seq_len: 128
+dropout: 0.1
+
+# Training Parameters
+num_epochs: 10
+batch_size: 16
+learning_rate: 0.0001
+weight_decay: 0.01
+grad_clip: 1.0
+max_steps: 0  # 0 means no limit
+
+# Data Parameters
+top_k_vocab: 50000
+use_fasttext: true
+freeze_embeddings: false
+
+# Optimization
+use_scheduler: true
+
+# Logging and Saving
+output_dir: "./outputs"
+log_interval: 100
+eval_interval: 1
+generate_interval: 5
+
+# Generation Parameters
+temperature: 0.8
+top_k: 50
+
+# Weights & Biases Logging
+use_wandb: true
+wandb_project: "decoder-transformer"
+wandb_name: null  # Auto-generated if null
