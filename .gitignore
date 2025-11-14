@@ -17,3 +17,7 @@ wandb/
 data/tinystories.txt
 experiments/
 report/
+trained_transformer_model*
+attention_visualizations/
+data/
+evaluation_results.json

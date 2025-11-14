@@ -106,6 +106,7 @@ class ModelEvaluator:
             generated_text = self.processor.ids_to_text(generated[0].cpu().tolist())
             generated_texts.append(generated_text)
         return generated_texts
+
     def evaluate_on_dataset(self, test_file: str, num_samples: int = 100,
                           max_length: int = 50, prompt_length: int = 5, beam_search: bool = False, beam_size: int = 5) -> dict:
         print(f"Loading test data from {test_file}")
@@ -118,14 +119,11 @@ class ModelEvaluator:
         prompts = []
         references = []
         for story in stories:
-            # Tokenize the story to get proper tokens
             token_ids = self.processor.text_to_ids(story, add_special_tokens=False)
             if len(token_ids) > prompt_length:
-                # Get first prompt_length tokens as prompt
                 prompt_ids = token_ids[:prompt_length]
                 reference_ids = token_ids[prompt_length:]
-                
-                # Convert back to text
+                    
                 prompt = self.processor.ids_to_text(prompt_ids)
                 reference = self.processor.ids_to_text(reference_ids)
                 
@@ -178,63 +176,3 @@ class ModelEvaluator:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_results, f, indent=2, ensure_ascii=False)
         print(f"Results saved to {output_file}")
-
-# def main():
-#     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-#     print(f"Using device: {device}")
-#     print("Loading model and processor...")
-#     processor, _, _, embeddings = prepare_data_pipeline(
-#         stories_file="data/tinystories_small.txt",
-#         cache_dir="cache",
-#         batch_size=32,
-#         use_fasttext=True,
-#         fasttext_path="cc.en.300.vec"
-#     )
-#     model = DecoderOnlyTransformer(
-#         vocab_size=processor.vocab_size,
-#         d_model=512,
-#         num_layers=6,
-#         num_heads=8,
-#         d_ff=2048,
-#         max_seq_len=128,
-#         dropout=0.1,
-#         fasttext_embeddings=embeddings,
-#         freeze_embeddings=False,
-#         pad_idx=processor.special_tokens['<pad>']
-#     )
-#     checkpoint_path = "checkpoints/latest_checkpoint.pt"
-#     if os.path.exists(checkpoint_path):
-#         print(f"Loading checkpoint from {checkpoint_path}")
-#         checkpoint = torch.load(checkpoint_path, map_location=device)
-#         model.load_state_dict(checkpoint['model_state_dict'])
-#         print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-#     else:
-#         print("No checkpoint found, using untrained model")
-#     model = model.to(device)
-#     evaluator = ModelEvaluator(model, processor, device)
-#     print("Starting evaluation...")
-#     results = evaluator.evaluate_on_dataset(
-#         test_file="data/tinystories.txt",
-#         num_samples=50,
-#         max_length=50
-#     )
-#     print("\n" + "="*50)
-#     print("EVALUATION RESULTS")
-#     print("="*50)
-#     print(f"Number of samples: {results['num_samples']}")
-#     print(f"Average Perplexity: {results['avg_perplexity']:.4f}")
-#     print(f"BLEU Score: {results['bleu_score']:.4f}")
-#     print(f"BLEU-1: {results['bleu_scores']['precisions'][0]:.4f}")
-#     print(f"BLEU-2: {results['bleu_scores']['precisions'][1]:.4f}")
-#     print(f"BLEU-3: {results['bleu_scores']['precisions'][2]:.4f}")
-#     print(f"BLEU-4: {results['bleu_scores']['precisions'][3]:.4f}")
-#     print("\nSample Generated Texts:")
-#     for i, (gen, ref) in enumerate(zip(results['generated_texts'], results['references'])):
-#         print(f"\nSample {i+1}:")
-#         print(f"Generated: {gen}")
-#         print(f"Reference: {ref}")
-#     evaluator.save_results(results, "evaluation_results.json")
-#     print(f"\nEvaluation complete! Results saved to evaluation_results.json")
-
-# if __name__ == "__main__":
-#     main()
