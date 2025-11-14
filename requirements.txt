@@ -5,3 +5,10 @@ spacy>=3.0.0
 numpy<2.0.0
 transformers>=4.20.0
 tqdm>=4.64.0
+wandb
+nltk
+tqdm
+evaluate
+pyyaml>=6.0
+matplotlib>=3.5.0
+seaborn>=0.12.0

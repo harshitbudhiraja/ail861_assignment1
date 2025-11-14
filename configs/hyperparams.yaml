@@ -38,3 +38,6 @@ top_k: 50
 use_wandb: true
 wandb_project: "decoder-transformer"
 wandb_name: null  # Auto-generated if null
+context_length: 64
+num_of_layers: 3
+num_of_heads: 8

@@ -26,6 +26,9 @@ class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 5000):
         super().__init__()
         
+        self.d_model = d_model
+        self.max_len = max_len
+        
         # Create positional encoding matrix
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -39,7 +42,27 @@ class SinusoidalPositionalEncoding(nn.Module):
     
     def forward(self, x):
         # x shape: (batch_size, seq_len, d_model)
-        return x + self.pe[:, :x.size(1), :]
+        seq_len = x.size(1)
+        
+        # If sequence is longer than pre-computed positions, extend on-the-fly
+        if seq_len > self.max_len:
+            # Compute additional positional encodings
+            additional_len = seq_len - self.max_len
+            position = torch.arange(self.max_len, seq_len, dtype=torch.float, device=x.device).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, self.d_model, 2, dtype=torch.float, device=x.device) * 
+                               (-math.log(10000.0) / self.d_model))
+            
+            additional_pe = torch.zeros(additional_len, self.d_model, device=x.device)
+            additional_pe[:, 0::2] = torch.sin(position * div_term)
+            additional_pe[:, 1::2] = torch.cos(position * div_term)
+            
+            # Concatenate with existing positional encodings
+            pe = torch.cat([self.pe.to(x.device), additional_pe.unsqueeze(0)], dim=1)
+        else:
+            # Use pre-computed positional encodings
+            pe = self.pe[:, :seq_len, :].to(x.device)
+        
+        return x + pe
 
 
 class MultiHeadAttention(nn.Module):
@@ -60,7 +83,7 @@ class MultiHeadAttention(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, x, mask: Optional[torch.Tensor] = None):
+    def forward(self, x, mask: Optional[torch.Tensor] = None, return_attn: bool = False):
         batch_size, seq_len, d_model = x.shape
         
         # Linear projections and reshape for multi-head attention
@@ -76,15 +99,17 @@ class MultiHeadAttention(nn.Module):
             scores = scores.masked_fill(mask == 0, float('-inf'))
         
         attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
+        attn_weights_dropped = self.dropout(attn_weights)
         
         # Apply attention to values
-        attn_output = torch.matmul(attn_weights, V)
+        attn_output = torch.matmul(attn_weights_dropped, V)
         
         # Concatenate heads and apply output projection
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
         output = self.W_o(attn_output)
         
+        if return_attn:
+            return output, attn_weights
         return output
 
 
@@ -114,15 +139,21 @@ class DecoderLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
     
-    def forward(self, x, mask: Optional[torch.Tensor] = None):
+    def forward(self, x, mask: Optional[torch.Tensor] = None, return_attn: bool = False):
         # Self-attention with residual connection and layer norm
-        attn_output = self.self_attn(x, mask)
+        if return_attn:
+            attn_output, attn_weights = self.self_attn(x, mask, return_attn=True)
+        else:
+            attn_output = self.self_attn(x, mask, return_attn=False)
+            attn_weights = None
         x = self.norm1(x + self.dropout1(attn_output))
         
         # Feed-forward with residual connection and layer norm
         ff_output = self.feed_forward(x)
         x = self.norm2(x + self.dropout2(ff_output))
         
+        if return_attn:
+            return x, attn_weights
         return x
 
 
@@ -196,15 +227,17 @@ class DecoderOnlyTransformer(nn.Module):
         padding_mask = (x != self.pad_idx).unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
         return padding_mask
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_attn: bool = False) -> torch.Tensor:
         """
         Forward pass through the decoder-only transformer.
         
         Args:
             x: Input tensor of token indices, shape (batch_size, seq_len)
+            return_attn: If True, return attention weights from all layers
         
         Returns:
             Output logits, shape (batch_size, seq_len, vocab_size)
+            If return_attn=True, also returns list of attention weights from each layer
         """
         batch_size, seq_len = x.shape
         
@@ -226,14 +259,21 @@ class DecoderOnlyTransformer(nn.Module):
         x = self.dropout(x)
         
         # Pass through decoder layers
+        all_attn_weights = []
         for layer in self.layers:
-            x = layer(x, mask)
+            if return_attn:
+                x, attn_weights = layer(x, mask, return_attn=True)
+                all_attn_weights.append(attn_weights)
+            else:
+                x = layer(x, mask, return_attn=False)
         
         x = self.norm(x)
         
         # Project to vocabulary
         logits = self.output_projection(x)
         
+        if return_attn:
+            return logits, all_attn_weights
         return logits
     
 
@@ -276,59 +316,119 @@ class DecoderOnlyTransformer(nn.Module):
         ], lr=learning_rate)
         
         return optimizer
+    def _sample_generate(
+        self,
+        start_tokens,
+        max_length,
+        temperature,
+        top_k,
+        eos_token_id
+    ):
+        batch_size = start_tokens.shape[0]
+        generated = start_tokens
+
+        with torch.no_grad():
+            for _ in range(max_length - start_tokens.shape[1]):
+
+                logits = self.forward(generated)  # (B, L, V)
+                next_token_logits = logits[:, -1, :] / temperature
+
+                # Top-k filtering
+                if top_k is not None:
+                    top_k_logits, top_k_idx = torch.topk(next_token_logits, top_k)
+                    filtered = torch.full_like(next_token_logits, float("-inf"))
+                    filtered.scatter_(1, top_k_idx, top_k_logits)
+                    next_token_logits = filtered
+
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, 1)  # (B,1)
+
+                generated = torch.cat([generated, next_token], dim=1)
+
+                if eos_token_id is not None and (next_token == eos_token_id).all():
+                    break
+
+        return generated
 
 
     def generate(
-        self,
-        start_tokens: torch.Tensor,
-        max_length: int,
-        temperature: float = 1.0,
-        top_k: Optional[int] = None,
-        eos_token_id: Optional[int] = None
-    ) -> torch.Tensor:
-        """
-        Generate text autoregressively.
-        
-        Args:
-            start_tokens: Initial tokens, shape (batch_size, start_len)
-            max_length: Maximum length to generate
-            temperature: Sampling temperature
-            top_k: If set, only sample from top k tokens
-            eos_token_id: Stop generation if this token is generated
-        
-        Returns:
-            Generated token sequence, shape (batch_size, max_length)
-        """
+    self,
+    start_tokens: torch.Tensor,
+    max_length: int,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+    eos_token_id: Optional[int] = None,
+    beam_search: bool = False,
+    beam_size: int = 3,
+) -> torch.Tensor:
+
+   
         self.eval()
-        batch_size = start_tokens.shape[0]
-        generated = start_tokens
-        
+        B = start_tokens.size(0)
+        device = start_tokens.device
+
+        # ------------------------------
+        # 1) AUTOREGRESSIVE SAMPLING MODE
+        # ------------------------------
+        if not beam_search:
+            return self._sample_generate(
+                start_tokens, max_length, temperature, top_k, eos_token_id
+            )
+
+        # ------------------------------
+        # 2) BEAM SEARCH MODE
+        # ------------------------------
         with torch.no_grad():
-            for _ in range(max_length - start_tokens.shape[1]):
-                # Get predictions for the current sequence
-                logits = self.forward(generated)
-                
-                # Get logits for the last token
-                next_token_logits = logits[:, -1, :] / temperature
-                
-                # Apply top-k filtering if specified
-                if top_k is not None:
-                    top_k_logits, top_k_indices = torch.topk(next_token_logits, top_k)
-                    next_token_logits = torch.full_like(next_token_logits, float('-inf'))
-                    next_token_logits.scatter_(1, top_k_indices, top_k_logits)
-                
-                # Sample next token
-                probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                # Append to generated sequence
-                generated = torch.cat([generated, next_token], dim=1)
-                
-                # Check for EOS token
-                if eos_token_id is not None and (next_token == eos_token_id).all():
-                    break
-        
-        return generated
+
+            # Beam: list of (tokens, score)
+            # score = log probability sum
+            beams = [ (start_tokens, torch.zeros(B, device=device)) ]  # size B beams
+
+            for _ in range(max_length - start_tokens.size(1)):
+
+                new_beams = []
+
+                for seq, seq_logprob in beams:
+
+                    # forward pass
+                    logits = self.forward(seq)[:, -1, :]  # (B, V)
+                    logprobs = F.log_softmax(logits, dim=-1)  # log probs
+
+                    # get top-k candidates for beam search
+                    top_logprobs, top_idx = torch.topk(logprobs, beam_size, dim=-1)
+                    # shape: (B, beam_size)
+
+                    # expand beams
+                    for b in range(beam_size):
+                        next_token = top_idx[:, b].unsqueeze(-1)  # (B,1)
+                        next_score = seq_logprob + top_logprobs[:, b]  # (B)
+
+                        new_seq = torch.cat([seq, next_token], dim=1)
+                        new_beams.append((new_seq, next_score))
+
+                # keep only best beams
+                # flatten beam list from B*beam_size -> beam_size beams
+                all_scores = torch.stack([score for (_, score) in new_beams])  # (beam_size*beam_size, B)
+                best_indices = torch.topk(all_scores, beam_size, dim=0).indices  # (beam_size, B)
+
+                beams = []
+                for k in range(beam_size):
+                    idx = best_indices[k]
+                    beams.append(new_beams[idx])
+
+                # check EOS
+                if eos_token_id is not None:
+                    all_end = True
+                    for seq, _ in beams:
+                        if not (seq[:, -1] == eos_token_id).all():
+                            all_end = False
+                    if all_end:
+                        break
+
+            # return best beam (highest score)
+            best_seq, _ = beams[0]
+            return best_seq
+
 
 
 class FastTextEmbeddingLoader:
